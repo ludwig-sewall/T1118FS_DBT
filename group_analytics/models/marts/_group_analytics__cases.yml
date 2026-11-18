@@ -1,0 +1,331 @@
+version: 2
+models:
+- name: dim_customer_opportunities
+  description: Public cross-sell and credit-watch flags per party, with value segment and profit.
+  config:
+    access: public
+  semantic_model:
+    enabled: true
+  agg_time_dimension: as_of_date
+  columns:
+  - name: customer_id
+    data_tests:
+    - unique
+    - not_null
+    entity:
+      type: primary
+      name: customer_opportunity
+  - name: value_segment
+    dimension:
+      type: categorical
+  - name: next_best_action
+    dimension:
+      type: categorical
+  - name: customer_type
+    dimension:
+      type: categorical
+  - name: profit_band
+    dimension:
+      type: categorical
+  - name: as_of_date
+    data_tests:
+    - not_null
+    granularity: day
+    dimension:
+      type: time
+  metrics:
+  - name: opportunity_customers
+    description: Parties with a value segment and next best action.
+    label: Customers
+    type: simple
+    agg: count
+    expr: '1'
+  - name: insurance_prospects
+    description: Banking customers without an insurance relationship.
+    label: Insurance prospects
+    type: simple
+    agg: sum
+    expr: insurance_prospect
+  - name: wealth_prospects
+    description: Profitable banking customers without a wealth relationship.
+    label: Wealth prospects
+    type: simple
+    agg: sum
+    expr: wealth_prospect
+  - name: credit_watch_customers
+    description: Customers in arrears or with a frozen account.
+    label: Credit watch
+    type: simple
+    agg: sum
+    expr: credit_watch
+  - name: relationship_profit
+    description: Profit across banking, insurance and wealth since the first month.
+    label: Relationship profit
+    type: simple
+    agg: sum
+    expr: total_profit
+  - name: profit_per_customer
+    description: Relationship profit per customer.
+    label: Profit per customer
+    type: ratio
+    numerator: relationship_profit
+    denominator: opportunity_customers
+- name: fct_loan_book
+  description: Public loan book with arrears and missed instalments per loan.
+  config:
+    access: public
+  semantic_model:
+    enabled: true
+  agg_time_dimension: as_of_date
+  columns:
+  - name: loan_id
+    data_tests:
+    - unique
+    - not_null
+    entity:
+      type: primary
+      name: loan
+  - name: product_name
+    dimension:
+      type: categorical
+  - name: customer_type
+    dimension:
+      type: categorical
+  - name: loan_status
+    dimension:
+      type: categorical
+  - name: delinquency_bucket
+    dimension:
+      type: categorical
+  - name: arrears_status
+    dimension:
+      type: categorical
+  - name: as_of_date
+    data_tests:
+    - not_null
+    granularity: day
+    dimension:
+      type: time
+  metrics:
+  - name: loans
+    description: Loans on the book.
+    label: Loans
+    type: simple
+    agg: count
+    expr: '1'
+  - name: loan_exposure
+    description: Outstanding loan balance.
+    label: Exposure
+    type: simple
+    agg: sum
+    expr: outstanding_balance
+  - name: loan_arrears
+    description: Amount past due.
+    label: Arrears
+    type: simple
+    agg: sum
+    expr: arrears_amount
+  - name: arrears_rate
+    description: Arrears as a share of exposure.
+    label: Arrears rate
+    type: ratio
+    numerator: loan_arrears
+    denominator: loan_exposure
+  - name: instalments_due
+    description: Instalments due to date.
+    label: Instalments due
+    type: simple
+    agg: sum
+    expr: instalments_due
+  - name: instalments_missed
+    description: Instalments not paid.
+    label: Instalments missed
+    type: simple
+    agg: sum
+    expr: instalments_missed
+  - name: missed_payment_rate
+    description: Missed instalments as a share of instalments due.
+    label: Missed payment rate
+    type: ratio
+    numerator: instalments_missed
+    denominator: instalments_due
+- name: fct_claim_activity
+  description: Public insurance claims with amounts, reserves and settlement times.
+  config:
+    access: public
+  semantic_model:
+    enabled: true
+  agg_time_dimension: reported_date
+  columns:
+  - name: claim_id
+    data_tests:
+    - unique
+    - not_null
+    entity:
+      type: primary
+      name: claim
+  - name: product_name
+    dimension:
+      type: categorical
+  - name: claim_status
+    dimension:
+      type: categorical
+  - name: reported_date
+    data_tests:
+    - not_null
+    granularity: day
+    dimension:
+      type: time
+  metrics:
+  - name: claims_reported
+    description: Claims reported.
+    label: Claims
+    type: simple
+    agg: count
+    expr: '1'
+  - name: claimed_value
+    description: Amount claimed.
+    label: Claimed
+    type: simple
+    agg: sum
+    expr: claimed_amount
+  - name: claim_payouts
+    description: Amount paid on claims.
+    label: Paid
+    type: simple
+    agg: sum
+    expr: paid_amount
+  - name: open_reserves
+    description: Reserve held on open claims.
+    label: Open reserve
+    type: simple
+    agg: sum
+    expr: open_reserve
+  - name: payout_ratio
+    description: Paid as a share of claimed.
+    label: Payout ratio
+    type: ratio
+    numerator: claim_payouts
+    denominator: claimed_value
+  - name: avg_days_to_settle
+    description: Days from report to settlement, settled claims only.
+    label: Days to settle
+    type: simple
+    agg: average
+    expr: days_to_settle
+- name: fct_policy_book
+  description: Public insurance policies with premium, sum insured and incurred claims.
+  config:
+    access: public
+  semantic_model:
+    enabled: true
+  agg_time_dimension: as_of_date
+  columns:
+  - name: policy_id
+    data_tests:
+    - unique
+    - not_null
+    entity:
+      type: primary
+      name: policy
+  - name: product_name
+    dimension:
+      type: categorical
+  - name: policy_status
+    dimension:
+      type: categorical
+  - name: as_of_date
+    data_tests:
+    - not_null
+    granularity: day
+    dimension:
+      type: time
+  metrics:
+  - name: policies
+    description: Policies written.
+    label: Policies
+    type: simple
+    agg: count
+    expr: '1'
+  - name: written_premium
+    description: Annual premium.
+    label: Written premium
+    type: simple
+    agg: sum
+    expr: annual_premium
+  - name: insured_value
+    description: Sum insured.
+    label: Sum insured
+    type: simple
+    agg: sum
+    expr: sum_insured
+  - name: incurred_losses
+    description: Paid claims plus open reserves.
+    label: Incurred claims
+    type: simple
+    agg: sum
+    expr: incurred_claims
+  - name: loss_ratio
+    description: Incurred claims as a share of written premium.
+    label: Loss ratio
+    type: ratio
+    numerator: incurred_losses
+    denominator: written_premium
+- name: fct_portfolio_flows_monthly
+  description: Public monthly buys, sells, net flows and fees per portfolio, with risk profile.
+  config:
+    access: public
+  semantic_model:
+    enabled: true
+  agg_time_dimension: trade_month
+  columns:
+  - name: portfolio_month_id
+    data_tests:
+    - unique
+    - not_null
+    entity:
+      type: primary
+      name: portfolio_month
+  - name: risk_profile
+    dimension:
+      type: categorical
+  - name: portfolio_status
+    dimension:
+      type: categorical
+  - name: trade_month
+    data_tests:
+    - not_null
+    granularity: month
+    dimension:
+      type: time
+  metrics:
+  - name: gross_inflows
+    description: Buys into portfolios.
+    label: Inflows
+    type: simple
+    agg: sum
+    expr: buy_amount
+  - name: gross_outflows
+    description: Sells out of portfolios.
+    label: Outflows
+    type: simple
+    agg: sum
+    expr: sell_amount
+  - name: net_flows
+    description: Inflows minus outflows.
+    label: Net flows
+    type: simple
+    agg: sum
+    expr: net_investment
+  - name: advisory_fees
+    description: Fees charged on portfolios.
+    label: Fees
+    type: simple
+    agg: sum
+    expr: fees
+  - name: trades
+    description: Trades executed.
+    label: Trades
+    type: simple
+    agg: sum
+    expr: trade_count

@@ -1,0 +1,91 @@
+# Business cases this demo answers, mapped to the sales-automation-beast use-case library.
+# Panels query the Semantic Layer metrics in group_analytics. Check with `python -m generator library`.
+industry: banking
+groups:
+- department: retail_digital
+  cases:
+  - case: customer_360
+    question: How many customers hold more than one product line, and what are they worth?
+    model: dim_customer_360
+    panels:
+    - kpis: [customers, total_revenue, total_profit, assets_under_management]
+    - bar: total_profit
+      by: profit_band
+      title: Profit by profit band
+    - bar: customers
+      by: customer_type
+      title: Customers by type
+    - line: monthly_profit
+      model: fct_customer_monthly
+      title: Profit by month
+  - case: next_best_action_cross_sell
+    question: Who should we offer insurance or wealth management to next?
+    model: dim_customer_opportunities
+    panels:
+    - kpis: [opportunity_customers, insurance_prospects, wealth_prospects, credit_watch_customers]
+    - bar: opportunity_customers
+      by: next_best_action
+      title: Customers by next best action
+    - table: [opportunity_customers, insurance_prospects, wealth_prospects, profit_per_customer]
+      by: [value_segment, customer_type]
+      order: opportunity_customers
+- department: risk_capital
+  cases:
+  - case: credit_risk_models_pd_lgd_ead
+    question: Where is the loan book in arrears, and how concentrated is the exposure?
+    model: fct_loan_book
+    note: Clean, tested inputs for PD, LGD and EAD models. The models themselves are not part of the demo.
+    panels:
+    - kpis: [loans, loan_exposure, loan_arrears, arrears_rate]
+    - bar: loan_exposure
+      by: product_name
+      title: Exposure by product
+    - bar: loan_arrears
+      by: delinquency_bucket
+      title: Arrears by delinquency bucket
+    - table: [loans, loan_exposure, loan_arrears, missed_payment_rate]
+      by: [product_name, customer_type]
+      order: loan_exposure
+- department: insurance.claims
+  cases:
+  - case: claims_triage_and_severity
+    question: Which products drive claim cost, and how fast do we settle?
+    model: fct_claim_activity
+    panels:
+    - kpis: [claims_reported, claimed_value, claim_payouts, avg_days_to_settle]
+    - bar: claim_payouts
+      by: product_name
+      title: Paid claims by product
+    - bar: avg_days_to_settle
+      by: product_name
+      title: Days to settle by product
+    - line: claims_reported
+      title: Claims reported by month
+- department: insurance.pricing_actuarial
+  cases:
+  - case: pricing_and_rating_models
+    question: Which products are priced below their loss experience?
+    model: fct_policy_book
+    panels:
+    - kpis: [policies, written_premium, incurred_losses, loss_ratio]
+    - bar: loss_ratio
+      by: product_name
+      title: Loss ratio by product
+    - table: [policies, written_premium, incurred_losses, loss_ratio]
+      by: [product_name]
+      order: loss_ratio
+- department: asset_wealth_management.flows_distribution
+  cases:
+  - case: flows_and_aum_analytics
+    question: Are clients adding or withdrawing money, and in which risk profiles?
+    model: fct_portfolio_flows_monthly
+    panels:
+    - kpis: [gross_inflows, gross_outflows, net_flows, advisory_fees]
+    - line: [gross_inflows, gross_outflows]
+      title: Inflows and outflows by month
+    - bar: net_flows
+      by: risk_profile
+      title: Net flows by risk profile
+    - line: net_flows
+      by: risk_profile
+      title: Net flows by month and risk profile

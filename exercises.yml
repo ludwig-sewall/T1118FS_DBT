@@ -1,0 +1,547 @@
+# Workshop exercises for this codebase. Each one is a business scenario and the steps to
+# answer it on the dbt platform. Every step names the capability it proves (the names in
+# the demo generator's test plan). Check with `python -m generator exercises`.
+exercises:
+- id: banking_status_audit
+  title: Show an auditor where banking status is defined
+  persona: Internal audit, financial crime compliance
+  project: group_analytics
+  minutes: 15
+  needs: The Production job in every project has run once. In dbt Platform, open Jobs and open the latest run. It should have succeeded.
+  scenario: >-
+    The Q1 compliance report lists customers by banking status. Internal audit expected to see the
+    account the fraud team froze in March. The report shows no frozen customers and one customer with
+    status F. The auditor asks where banking status is defined and whether this is a data entry error.
+  steps:
+  - where: Catalog
+    capability: dbt Catalog
+    do: >-
+      In Catalog, search for `dim_customer_360` and open the model in `T1118FS_GROUP_ANALYTICS`.
+      On the General tab, read the description and check when Production last built it.
+  - where: Catalog
+    capability: Column-level lineage
+    do: >-
+      Open the Columns tab, select `banking_status` and open its column lineage. Follow it upstream:
+      `int_customer_360__banking` renames `customer_status` from `dim_banking_customers`, which passes
+      it through from `stg_banking__customers`, where the column is marked as a transformation.
+  - where: Catalog
+    capability: dbt Mesh
+    do: >-
+      Note where the lineage crosses projects. `dim_banking_customers` is a public model in
+      `T1118FS_BANKING` with an enforced contract. `T1118FS_GROUP_ANALYTICS` reads it with a
+      cross-project ref and cannot reach the banking staging models or raw tables.
+  - where: Catalog
+    capability: Documentation & lineage
+    do: >-
+      Open `stg_banking__customers` and its Code tab. The CASE maps `A`, `I` and `C` to active, inactive
+      and closed. Any other code passes through unchanged. This CASE is the definition the auditor asked for.
+  - where: Catalog
+    capability: Trust Signals
+    do: >-
+      Go back to `dim_banking_customers`. Its health signal is Caution, not Healthy. On the lineage graph,
+      turn on the Test status lens to see that this is the model where the problem is caught.
+  - where: Catalog
+    capability: Tests & contracts
+    do: >-
+      In the Tests section, open the `accepted_values` test on `customer_status`. It allows active, inactive,
+      closed and frozen, is set to warn rather than fail, and reports one row.
+  - where: Studio
+    capability: dbt Studio
+    do: >-
+      Choose Open in Studio IDE on `dim_banking_customers`, turn on the Defer to staging/production toggle
+      beside the Command bar, and Preview this query in a new file. One row comes back: `B-1009`, party
+      `P-1009`, status `F`.
+    code: |
+      select banking_customer_id, party_key, customer_status
+      from {{ ref('dim_banking_customers') }}
+      where customer_status not in ('active', 'inactive', 'closed', 'frozen')
+  done_when: >-
+    You can tell the auditor that banking status is defined in `stg_banking__customers` in
+    `T1118FS_BANKING`, that `F` is the source code for frozen and the model does not map it yet, and
+    that it affects one customer (`B-1009`). It is a modelling gap, not a data entry error.
+
+- id: banking_status_fix
+  title: Map the frozen status without touching Production
+  persona: Analytics engineer, banking data team
+  project: banking
+  minutes: 20
+  needs: The Production job in every project has run once. In dbt Platform, open Jobs and open the latest run. It should have succeeded.
+  scenario: >-
+    Audit wants the frozen customer to show as frozen in the next compliance report. The source system
+    is right, so the fix belongs in the banking staging model. Nobody wants to rebuild the banking
+    project in a development schema to test a one-line change.
+  steps:
+  - where: Studio
+    capability: dbt Studio
+    do: >-
+      Open Studio IDE in `T1118FS_BANKING` and create a branch from main, for example `fix/frozen-status`.
+  - where: Studio
+    capability: Automated Deferral
+    do: >-
+      Turn on the Defer to staging/production toggle beside the Command bar. Your development schema is
+      empty. Models you have not changed now resolve to their deployed version, so you only build what you edit.
+  - where: Wizard
+    capability: dbt Wizard
+    do: >-
+      Open dbt Wizard in Studio and give it the audit finding. Review the diff before you accept it. It
+      should add one branch, `when customer_status = 'F' then 'frozen'`, to the CASE in
+      `banking/models/staging/banking/stg_banking__customers.sql`.
+    code: |
+      The accepted_values test on dim_banking_customers.customer_status warns on status F.
+      F means frozen in the source system. Find where customer_status is decoded and fix it.
+  - where: Studio
+    capability: Fusion engine & LSP
+    do: >-
+      Compile the model. dbt v2 parses and analyses the SQL before anything runs in Snowflake. Open the
+      Compiled code tab and check the new branch is there.
+    code: |
+      dbt compile --select stg_banking__customers
+  - where: Studio
+    capability: Tests & contracts
+    do: >-
+      Build the staging model and the public model that reads it. The `accepted_values` test on
+      `customer_status` passes without a warning. Preview `dim_banking_customers`. `B-1009` is frozen.
+    code: |
+      dbt build --select stg_banking__customers dim_banking_customers
+  - where: Studio
+    capability: Macros
+    do: >-
+      Make it the group standard. Open `platform/macros/decode_status.sql`, a macro every project installs
+      through `dependencies.yml`. Replace the CASE with the macro call and build again. The result is the same.
+    code: |
+      {{ platform.decode_status('customer_status', {'A': 'active', 'I': 'inactive', 'C': 'closed', 'F': 'frozen'}) }}::varchar as customer_status,
+  done_when: >-
+    `B-1009` shows frozen in your development schema, the build has no warning on `customer_status`,
+    and Production is unchanged.
+
+- id: banking_status_release
+  title: Ship the status fix with evidence of what it changes
+  persona: Data platform lead, change control
+  project: banking
+  minutes: 20
+  needs: The frozen status fix is on a branch in `T1118FS_BANKING`.
+  scenario: >-
+    Change control requires that a change to a model feeding compliance reporting is reviewed with
+    evidence of what it does to the data, and that nothing reaches Production without passing tests.
+    Show the reviewer exactly which rows the fix changes.
+  steps:
+  - where: Studio
+    capability: dbt Studio
+    do: >-
+      In Studio IDE, commit and sync the branch, then create a pull request against main.
+  - where: GitHub
+    capability: Managed CI & deployment
+    do: >-
+      On the pull request, checks start on their own. Every project in the repo has a dbt platform CI job,
+      and the GitHub Actions workflow `ci` runs `scripts/check_naming.py` and
+      `scripts/check_test_coverage.py`. Open the run of `T1118FS_BANKING_CI`.
+  - where: Jobs
+    capability: Environments
+    do: >-
+      The job runs in the CI environment and defers to Production. It builds `stg_banking__customers` and
+      everything downstream of it in banking into a schema for this pull request, and reads the rest
+      from Production.
+    code: |
+      dbt build --select state:modified+
+  - where: Jobs
+    capability: Advanced CI
+    do: >-
+      Open the Compare tab on the run. `dim_banking_customers` has one modified row and no rows added or
+      removed. `customer_status` for `B-1009` changes from `F` to frozen. The same summary is posted as a
+      comment on the pull request.
+  - where: GitHub
+    capability: Deployment automation
+    do: >-
+      Merge the pull request. `T1118FS_BANKING_CD` starts on the merge and builds the change in Production.
+  - where: Jobs
+    capability: Jobs & scheduling
+    do: >-
+      Run `T1118FS_GROUP_ANALYTICS_PRODUCTION` so the customer 360 reads the corrected public model.
+  - where: Catalog
+    capability: Trust Signals
+    do: >-
+      In Catalog, open `dim_banking_customers`. The warning on `customer_status` is gone. Then open
+      `dim_customer_360` and check `banking_status`. It now has frozen and no `F`.
+  done_when: >-
+    The pull request is merged with green checks, the reviewer saw a one-row change before approving,
+    and `dim_customer_360` in Production shows one frozen customer.
+
+- id: arrears_rule_guard
+  title: Prove the arrears rule cannot change unnoticed
+  persona: Model risk management
+  project: banking
+  minutes: 20
+  needs: The Production job in every project has run once. In dbt Platform, open Jobs and open the latest run. It should have succeeded.
+  scenario: >-
+    The credit risk models take arrears from `fct_banking_loan_performance`. Model risk asks how in
+    arrears is calculated, how many loans are flagged today, and what stops a developer from quietly
+    changing the rule or dropping a column the risk models read.
+  steps:
+  - where: Catalog
+    capability: Column-level lineage
+    do: >-
+      In Catalog, open `fct_banking_loan_performance` in `T1118FS_BANKING`. On the Columns tab, open
+      the column lineage of `is_in_arrears`. It comes from `instalments_missed` in
+      `int_banking_loan_repayments__by_loan`, which counts instalments in `stg_banking__loan_repayments`
+      that have no `paid_date`.
+  - where: Catalog
+    capability: Tests & contracts
+    do: >-
+      In the Tests section, find the `expression_is_true` test with the expression `not is_in_arrears`.
+      It warns above 0 rows and fails above 8, so known arrears do not stop the build and a spike does.
+      Today it warns on 4 of 24 loans.
+  - where: Studio
+    capability: Unit tests
+    do: >-
+      In Studio IDE, open `banking/models/intermediate/_int_banking__models.yml` and read
+      `test_missed_instalments_drive_days_past_due`. Four fixed instalments go in, and it expects two
+      missed and 44 days past due. Run it with Defer on.
+    code: |
+      dbt test --select test_type:unit
+  - where: Studio
+    capability: Unit tests
+    do: >-
+      Change the rule as a developer might. In
+      `banking/models/intermediate/int_banking_loan_repayments__by_loan.sql`, give borrowers a 30-day
+      grace period on `instalments_missed`, then run the unit test again. It fails, with 1 missed
+      instalment where 2 are expected. Revert the change.
+    code: |
+      sum(case when paid_date is null
+            and {{ platform.days_between('due_date', platform.as_of_date()) }} > 30
+          then 1 else 0 end)::integer as instalments_missed,
+  - where: Studio
+    capability: Model contracts
+    do: >-
+      Now drop a column. Remove `arrears_amount` from the select in
+      `banking/models/marts/fct_banking_loan_performance.sql` and build the model. The build stops on the
+      contract, because the column is declared in `banking/models/marts/_banking__models.yml` with an
+      enforced contract. Restore the column.
+    code: |
+      dbt build --select fct_banking_loan_performance
+  - where: Catalog
+    capability: dbt Mesh
+    do: >-
+      In Catalog, expand the lineage of `fct_banking_loan_performance` to see who the contract protects.
+      `fct_loan_book` in `T1118FS_GROUP_ANALYTICS` reads it across projects and feeds the
+      `loan_arrears` and `arrears_rate` metrics.
+  done_when: >-
+    You have shown the rule, the 4 loans it flags today, a unit test that fails when the rule changes
+    and a contract that fails when a column is dropped. Your branch has no changes left.
+
+- id: profit_reconciliation
+  title: Reconcile group profit to the finance ledger
+  persona: Group financial controller
+  project: group_analytics
+  minutes: 15
+  needs: The Production job in every project has run once. In dbt Platform, open Jobs and open the latest run. It should have succeeded.
+  scenario: >-
+    The controller signs off the customer profitability pack. She wants proof that monthly profit in
+    the group customer view equals the finance ledger, and an explanation of why four customer months
+    are missing from it.
+  steps:
+  - where: Catalog
+    capability: Documentation & lineage
+    do: >-
+      In Catalog, open `fct_customer_monthly` in `T1118FS_GROUP_ANALYTICS` and expand its lineage.
+      Revenue, cost and profit come from `fct_customer_profitability_monthly`, a public model in
+      `T1118FS_FINANCIALS`. Banking, insurance and wealth activity come from the other three projects.
+  - where: Catalog
+    capability: Tests & contracts
+    do: >-
+      On the Columns tab, open `profit`. It carries a `platform.sums_match` test that compares its total
+      with `fct_customer_profitability_monthly.profit` in the financials project. The test passes. Both
+      totals are 924,005.00.
+  - where: Studio
+    capability: Macros
+    do: >-
+      In Studio IDE, open `platform/macros/generic_tests/sums_match.sql`. The reconciliation is written
+      once in the platform project and used as a test by every project that installs it.
+  - where: Catalog
+    capability: dbt Catalog
+    do: >-
+      Search Catalog for `fct_profitability_data_gaps` in `T1118FS_FINANCIALS` and read its
+      description and Code tab. A customer month is left out of profitability when its revenue is
+      unpriced or its cost is not yet allocated (`is_complete` in `int_customer_months__coverage`).
+  - where: Studio
+    capability: Automated Deferral
+    do: >-
+      Open Studio IDE in `T1118FS_FINANCIALS`, turn on Defer, open
+      `financials/models/marts/fct_profitability_data_gaps.sql` and click Preview. Four rows come back.
+      `P-1001` has a missing cost in October 2025, `P-1003` has missing costs in January and February
+      2026, and `P-1008` has unpriced revenue in February 2026.
+  done_when: >-
+    You can show the controller a passing reconciliation between the group view and the ledger, and
+    name the four customer months that are excluded and why.
+
+- id: risk_committee_metrics
+  title: Answer the risk committee from one definition of arrears
+  persona: Chief risk officer's office
+  project: group_analytics
+  minutes: 15
+  needs: The Semantic Layer is set up for `T1118FS_GROUP_ANALYTICS`. In dbt Platform, open the Semantic Layer for that project and confirm the metrics are listed.
+  scenario: >-
+    The risk committee meets tomorrow. They want loan exposure and arrears by delinquency bucket.
+    Last quarter two teams brought two different arrears rates, so this time they want one number
+    with its definition attached.
+  steps:
+  - where: Catalog
+    capability: Semantic Layer
+    do: >-
+      In Catalog, open the metric `arrears_rate` in `T1118FS_GROUP_ANALYTICS`. It is the ratio of
+      `loan_arrears` to `loan_exposure`, defined next to the model in
+      `group_analytics/models/marts/_group_analytics__cases.yml`.
+  - where: Catalog
+    capability: Documentation & lineage
+    do: >-
+      Follow the metric's lineage upstream to `fct_loan_book` and across the project boundary to
+      `fct_banking_loan_performance`. The committee's number rests on the same tested arrears rule the
+      banking team owns.
+  - where: Wizard
+    capability: dbt Wizard
+    do: >-
+      Open dbt Wizard from the home page and ask the question in plain language. It answers from the
+      governed metrics, not from SQL it wrote itself. Expect 20 current loans with no arrears, 1 loan
+      at 1-30 days with 425.75, 2 loans at 31-90 days with 8,144.30 and 1 loan at 90+ days with 7,085.84.
+    code: |
+      Show loans, loan exposure, loan arrears and arrears rate by delinquency bucket.
+  - where: Studio
+    capability: Semantic Layer
+    do: >-
+      Check the same numbers from the Command bar in Studio IDE. Total exposure is 13,223,500.00 and
+      total arrears 15,655.89, an arrears rate of 0.12%.
+    code: |
+      dbt sl query --metrics loans,loan_exposure,loan_arrears,arrears_rate --group-by loan__delinquency_bucket
+  done_when: >-
+    Wizard and the Semantic Layer query return the same four buckets, and you can show the committee
+    where `arrears_rate` is defined.
+
+- id: banking_morning_run
+  title: Run banking every morning and only build what changed
+  persona: Head of data operations
+  project: banking
+  minutes: 20
+  needs: Step 4 needs dbt State (state-aware orchestration) enabled on the account.
+  scenario: >-
+    Operations pays for every rebuild and takes the call when a report is stale. They want the banking
+    project to run each morning, to say whether the core banking extract arrived, and to skip models
+    whose code and data have not changed.
+  steps:
+  - where: Jobs
+    capability: Jobs & scheduling
+    do: >-
+      Open the job `T1118FS_BANKING_PRODUCTION`. It runs `dbt build` in the Production environment
+      and has no schedule. In Settings, choose Edit and under Triggers turn on Run on schedule for
+      every day at 06:00.
+  - where: Jobs
+    capability: Source freshness
+    do: >-
+      Under Execution settings, select Run source freshness and save. Run the job. The first step checks
+      `loaded_at` on the `customers` table of the banking source, as declared in
+      `banking/models/staging/banking/_banking__sources.yml`.
+  - where: Catalog
+    capability: Source freshness
+    do: >-
+      In Catalog, open the source table `customers` in `T1118FS_BANKING` and read its freshness
+      status and the time of the last load.
+  - where: Jobs
+    capability: State-aware orchestration
+    do: >-
+      Edit the job again and select Enable dbt v2 cost optimization features. Run the job twice. In the
+      second run the models are marked Reused, because neither their code nor their source data changed.
+  - where: Jobs
+    capability: Run visibility & alerts
+    do: >-
+      Open the last run. It finished with a warning from the arrears threshold test on
+      `fct_banking_loan_performance`. In Account settings, under Notifications, subscribe to runs of
+      `T1118FS_BANKING_PRODUCTION` that fail or warn.
+  done_when: >-
+    The job has a schedule, reports source freshness, reuses unchanged models on a second run, and
+    tells you when a run warns or fails.
+
+- id: status_count
+  title: Count banking customers by status without installing dbt
+  persona: New analyst, first week
+  project: banking
+  minutes: 20
+  needs: The demo jobs have run once in every project (Operate tab of the demo console).
+  scenario: >-
+    A new analyst has to count banking customers by status before the end of the day, on a machine with nothing installed. The hiring manager also wants to know which training covers the tool they used, and who would design the next domain project.
+  steps:
+  - where: Studio
+    capability: Managed dev environments
+    do: >-
+      Open Studio IDE in T1118FS_BANKING. This is the managed development environment: dbt is already installed, and the development credentials on the project are yours. Turn on Defer to staging/production. Preview the query below. It writes to your development schema. Active is 21, inactive is 2, closed is 2, and one customer is still F. The case in `stg_banking__customers` maps A, I and C, and leaves F as F.
+    code: |
+      select customer_status, count(*) as customers
+      from {{ ref('stg_banking__customers') }}
+      group by 1
+  - where: Account
+    capability: dbt Learn
+    do: >-
+      Open dbt Learn and the lesson on developing in the IDE. It covers the preview you just ran.
+  - where: Account
+    capability: Private Academy
+    do: >-
+      Open the account menu and see whether a Private Academy link is there. Write down what you find. The lesson you used for this count is on the public dbt Learn catalog.
+  - where: Account
+    capability: Professional Services
+    do: >-
+      The next domain would be built the same way as this one: a project of its own, public models and a cross-project ref. Professional Services is who you book for that design. It is arranged with dbt, outside this repository. Write the hiring manager one line on who would own it.
+  done_when: >-
+    You can show the hiring manager the status counts (active is 21, inactive is 2, closed is 2, and one customer is still F), the development schema they were previewed in, the Learn lesson you followed, whether Private Academy is on this account, and who would own the next domain.
+
+- id: ask_an_agent_about_status
+  title: Read the status rule from the editor and from an agent
+  persona: Analytics engineer
+  project: banking
+  minutes: 20
+  needs: The demo jobs have run once in every project (Operate tab of the demo console).
+  scenario: >-
+    The same status rule has to be explained to someone who will not open Catalog. They work in the editor, and they want an agent to answer from the project metadata rather than from a description pasted into a chat.
+  steps:
+  - where: GitHub
+    capability: dbt VS Code extension & LSP
+    do: >-
+      Clone the repository and open it in VS Code with the dbt extension. Open `banking/models/staging/banking/stg_banking__customers.sql`. Use autocomplete and the diagnostics on `stg_banking__customers`, and navigate from the source it reads to that source definition. The case maps A, I and C. F is left as F, so one customer stays unmapped.
+  - where: Studio
+    capability: dbt MCP server
+    do: >-
+      Connect the dbt MCP server to an agent and ask how `customer_status` is defined on `stg_banking__customers`. Compare the answer with the case in `banking/models/staging/banking/stg_banking__customers.sql`. A, I and C are mapped. F is left as F, so one customer stays unmapped.
+  - where: Account
+    capability: Metadata / Discovery API
+    do: >-
+      Open the Discovery API for this account and read the description of `dim_banking_customers`. It should match the description on the General tab of that model in Catalog, in T1118FS_BANKING.
+  done_when: >-
+    You can explain `customer_status` from the staging SQL, and you have checked an agent and the Discovery API against that SQL and against the description of `dim_banking_customers`.
+
+- id: keep_previous_status
+  title: Keep the previous status and pin a version of the public model
+  persona: Compliance analyst
+  project: banking
+  minutes: 25
+  needs: The demo jobs have run once in every project (Operate tab of the demo console).
+  adds: [snap_banking_customers]
+  scenario: >-
+    `dim_banking_customers` keeps one current row per banking customer and overwrites `customer_status` on every run. Compliance wants the previous value kept. Downstream projects need a version they can pin before a later breaking change.
+  steps:
+  - where: Studio
+    capability: Snapshots
+    do: >-
+      Create a snapshot `snap_banking_customers` on `stg_banking__customers`, with the check strategy, unique key `banking_customer_id` and check column `customer_status`. Build it. The first build records the current status of every row. The next time a status changes, the snapshot closes the old row and opens a new one.
+    code: |
+      {% snapshot snap_banking_customers %}
+      {{ config(strategy='check', unique_key='banking_customer_id', check_cols=['customer_status']) }}
+      select * from {{ ref('stg_banking__customers') }}
+      {% endsnapshot %}
+  - where: Studio
+    capability: Model versioning
+    do: >-
+      In `banking/models/marts/_banking__models.yml`, under `dim_banking_customers`, set latest_version to 1 and add a versions entry for v: 1. Leave the existing columns in place. Build the model. If the build asks for the columns under the version, move that column list under v: 1 and build again. A consumer can then ref version 1 while a later version is published.
+    code: |
+      dbt build --select dim_banking_customers
+  done_when: >-
+    `snap_banking_customers` has one current row per `banking_customer_id`, and `dim_banking_customers` is published as version 1 so a consumer can pin it.
+
+- id: rebuild_only_the_latest_month
+  title: Stop rebuilding every month on the morning run
+  persona: Platform owner
+  project: banking
+  minutes: 25
+  needs: The demo jobs have run once in every project (Operate tab of the demo console).
+  scenario: >-
+    `fct_banking_account_monthly` is a table, so the morning run rebuilds every month. The platform owner wants only the latest month processed, the build time visible, the job started from an API, and the job id written down for Terraform. The run itself stays on the hosted platform.
+  steps:
+  - where: Catalog
+    capability: Non-performant model detection
+    do: >-
+      Open Model performance and find `fct_banking_account_monthly` in T1118FS_BANKING. Note the build time from the last production run. The model is a table, so that run rebuilt every month.
+  - where: Studio
+    capability: Incremental models
+    do: >-
+      In `banking/models/marts/fct_banking_account_monthly.sql`, set the model to incremental with unique key `account_month_id`. On later runs, read only rows at or after the latest `transaction_month` already in the table. The marts config in the project file materializes these models as tables. The config block in the model file overrides that. Build the model once so the table exists, then build it again.
+    code: |
+      {{ config(materialized='incremental', unique_key='account_month_id') }}
+      {% if is_incremental() %}
+        where transaction_month >= (select max(transaction_month) from {{ this }})
+      {% endif %}
+  - where: Jobs
+    capability: Fully managed platform
+    do: >-
+      Open the latest run of T1118FS_BANKING_PRODUCTION. It ran on the dbt platform. This repository has no runner to operate. Note the run status.
+  - where: Jobs
+    capability: Native integrations & APIs
+    do: >-
+      On T1118FS_BANKING_PRODUCTION, open Settings and Triggers. The API trigger is how another system starts this job. Copy the job id.
+  - where: Account
+    capability: Terraform provider
+    do: >-
+      Write down the project id of T1118FS_BANKING and the job id you just copied. Those are the resources the dbt Terraform provider would declare. This repository has no Terraform files.
+  done_when: >-
+    `fct_banking_account_monthly` builds incrementally on `account_month_id`, you have its last build time, and you have the project and job ids for an API trigger and for Terraform.
+
+- id: who_uses_this_model
+  title: Show the dashboard that depends on the mart, and where shared tests come from
+  persona: Catalog owner
+  project: banking
+  minutes: 20
+  needs: The demo jobs have run once in every project (Operate tab of the demo console).
+  adds: [account_activity_dashboard]
+  scenario: >-
+    The catalog owner wants three things before a new report is published: whether `dim_banking_customers` is recommended as-is, a named downstream asset for the account activity dashboard, and an explanation of how `dbt_utils` and the platform package are installed.
+  steps:
+  - where: Catalog
+    capability: Model consumption & project recommendations
+    do: >-
+      In Catalog, open `dim_banking_customers` in T1118FS_BANKING. Read its recommendations and any query history. The model already has a description and tests. Note what is still listed, and whether anything outside dbt has queried it since the last production run.
+  - where: Studio
+    capability: Lineage Integrations
+    do: >-
+      Add an exposure `account_activity_dashboard` for the account activity dashboard that depends on `fct_banking_account_monthly`. Put it in the marts YAML. Build the model, then open its lineage in Catalog. The exposure is the downstream asset. A connected BI tool is listed on that same lineage. None is connected on this account, so the exposure is what you can show.
+    code: |
+      exposures:
+        - name: account_activity_dashboard
+          type: dashboard
+          depends_on:
+            - ref('fct_banking_account_monthly')
+  - where: Studio
+    capability: Native private packages
+    do: >-
+      Open `banking/dependencies.yml`. `dbt_utils` is a public hub package. Platform is installed with a local path because that project is a folder in this repository. A native private package is the install you use when the shared code is a private Git repository: a private key, the repo path, and the Git connection already on the account.
+  done_when: >-
+    You can say what Catalog still recommends for `dim_banking_customers`, show `account_activity_dashboard` downstream of `fct_banking_account_monthly`, and explain the two package installs in `banking/dependencies.yml`.
+
+- id: who_may_open_names
+  title: Decide who may open the customer name
+  persona: Security reviewer
+  project: banking
+  minutes: 25
+  needs: The demo jobs have run once in every project (Operate tab of the demo console).
+  scenario: >-
+    A security reviewer is looking at `stg_banking__customers.full_name`, the customer name. They want a developer group for T1118FS_BANKING, a record of how people sign in and how joiners are provisioned, an audit event for the group you create, the warehouse connection type, and the support path if the production job fails overnight.
+  steps:
+  - where: Account
+    capability: Enterprise permissions (RBAC)
+    do: >-
+      Open Account settings, Groups. Create a group named Banking developers with developer access to T1118FS_BANKING and without account admin. People who only read Catalog do not belong in it.
+  - where: Account
+    capability: SSO & SCIM provisioning
+    do: >-
+      Open Single sign-on. Record the identity provider, or that none is connected. This is the login in front of `full_name`.
+  - where: Account
+    capability: Automated Access
+    do: >-
+      On the access settings, record whether users and groups are provisioned from that identity provider. That provisioning is what adds and removes people from Banking developers when they join or leave.
+  - where: Account
+    capability: Audit logging
+    do: >-
+      Open the audit log and filter to the group change you just made. The event names you and the time. That is the record the reviewer keeps for `full_name`.
+  - where: Account
+    capability: Advanced network security
+    do: >-
+      Open the warehouse connection used by T1118FS_BANKING. Record whether it is a private endpoint or a public host. `stg_banking__customers.full_name` is the column the reviewer is protecting.
+  - where: Account
+    capability: dbt Support & Professional Services
+    do: >-
+      Open Help and draft a support request that names T1118FS_BANKING_PRODUCTION, the latest run id and `fct_banking_account_monthly`. Record the support package on the account, which sets the response time. Send the request only when you are meant to use that package.
+  done_when: >-
+    You can tell the reviewer who may develop in T1118FS_BANKING, how sign-in and provisioning work, the audit event for the group, the connection type in front of `full_name`, and which support package the account is on.
