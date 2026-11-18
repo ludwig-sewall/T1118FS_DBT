@@ -148,7 +148,7 @@ models:
   metrics:
   - name: customers
     description: Parties on the customer 360.
-    label: Customers
+    label: Customer count
     type: simple
     agg: count
     expr: '1'
